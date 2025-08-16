@@ -70,7 +70,6 @@ import (
 	"sigs.k8s.io/kueue/pkg/util/useragent"
 	"sigs.k8s.io/kueue/pkg/version"
 	"sigs.k8s.io/kueue/pkg/visibility"
-	"sigs.k8s.io/kueue/pkg/webhooks"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -234,7 +233,7 @@ func main() {
 
 	serverVersionFetcher := setupServerVersionFetcher(mgr, kubeConfig)
 
-	//setupProbeEndpoints(mgr, certsReady)
+	// setupProbeEndpoints(mgr, certsReady)
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
 	// Controllers who register after manager starts will start directly.

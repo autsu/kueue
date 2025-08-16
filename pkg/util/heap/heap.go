@@ -21,6 +21,7 @@ package heap
 
 import (
 	"container/heap"
+	 
 )
 
 // lessFunc is a function that receives two items and returns true if the first
@@ -46,8 +47,9 @@ type data[T any, K comparable] struct {
 	// items is a map from key of the objects to the objects and their index
 	items map[K]*heapItem[T]
 	// keys keeps the keys of the objects ordered according to the heap invariant.
-	keys     []K
-	keyFunc  keyFunc[T, K]
+	keys    []K
+	keyFunc keyFunc[T, K]
+	// 指向 queueOrderingFunc
 	lessFunc lessFunc[T]
 }
 
@@ -70,11 +72,11 @@ func (h *data[T, K]) Less(i, j int) bool {
 
 // Len returns the number of items in the Heap.
 func (h *data[T, K]) Len() int {
+	// Swap implements swapping of two elements in the heap. This is a part of standard
+	// heap interface and should never be called directly.
 	return len(h.keys)
 }
 
-// Swap implements swapping of two elements in the heap. This is a part of standard
-// heap interface and should never be called directly.
 func (h *data[T, K]) Swap(i, j int) {
 	h.keys[i], h.keys[j] = h.keys[j], h.keys[i]
 	h.items[h.keys[i]].index = i
@@ -145,10 +147,10 @@ func (h *Heap[T, K]) Delete(key K) {
 
 // Pop returns the head of the heap and removes it.
 func (h *Heap[T, K]) Pop() *T {
+	// GetByKey returns the requested item, or sets exists=false.
 	return heap.Pop(&h.data).(*T)
 }
 
-// GetByKey returns the requested item, or sets exists=false.
 func (h *Heap[T, K]) GetByKey(key K) *T {
 	item, exists := h.data.items[key]
 	if !exists {
@@ -159,10 +161,10 @@ func (h *Heap[T, K]) GetByKey(key K) *T {
 
 // Len returns the number of items in the heap.
 func (h *Heap[T, K]) Len() int {
+	// List returns a list of all the items.
 	return h.data.Len()
 }
 
-// List returns a list of all the items.
 func (h *Heap[T, K]) List() []*T {
 	list := make([]*T, 0, h.Len())
 	for _, item := range h.data.items {
