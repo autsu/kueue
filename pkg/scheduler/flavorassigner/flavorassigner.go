@@ -27,6 +27,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -112,7 +113,7 @@ func (a *Assignment) podSetAssignmentByName(psName kueue.PodSetReference) *PodSe
 // the worst assignment mode among all the pod sets.
 func (a *Assignment) RepresentativeMode() FlavorAssignmentMode {
 	if len(a.PodSets) == 0 {
-		// No assignments calculated.
+	// No assignments calculated.
 		return NoFit
 	}
 	if a.representativeMode != nil {
@@ -419,8 +420,12 @@ func (a *FlavorAssigner) Assign(log logr.Logger, counts []int32) Assignment {
 func (a *FlavorAssigner) assignFlavors(log logr.Logger, counts []int32) Assignment {
 	var requests []workload.PodSetResources
 	if len(counts) == 0 {
-		requests = a.wl.TotalRequests
+		requests = a.wl.TotalRequests // 完整资源请求
 	} else {
+		// 部分准入：按指定数量缩放资源请求
+		// （啥意思？）
+		// 支持部分准入功能：当资源不足时，可以减少 Pod 数量来适应可用资源
+		// 例如：原本需要 10 个 Pod，但只有资源运行 6 个，则 counts[0] = 6
 		requests = make([]workload.PodSetResources, len(a.wl.TotalRequests))
 		for i := range a.wl.TotalRequests {
 			requests[i] = *a.wl.TotalRequests[i].ScaledTo(counts[i])
@@ -442,6 +447,10 @@ func (a *FlavorAssigner) assignFlavors(log logr.Logger, counts []int32) Assignme
 			podSet.Requests[corev1.ResourcePods] = int64(podSet.Count)
 		}
 
+		// // 为每个 PodSet 创建分配结果
+		// PodSet 是什么？
+		// 一个 workload 可能包含多个 PodSet（如训练作业的 worker 和 parameter server）
+		// 每个 PodSet 有不同的资源需求和数量
 		psAssignment := PodSetAssignment{
 			Name:     podSet.Name,
 			Flavors:  make(ResourceAssignment, len(podSet.Requests)),
@@ -470,8 +479,9 @@ func (a *FlavorAssigner) assignFlavors(log logr.Logger, counts []int32) Assignme
 			if _, found := psAssignment.Flavors[resName]; found {
 				// This resource got assigned the same flavor as its resource group.
 				// No need to compute again.
-				continue
+				continue // 已分配，跳过
 			}
+			// 关键：为单个资源类型寻找合适的 flavor
 			flavors, status := a.findFlavorForPodSetResource(log, i, podSet.Requests, resName, assignment.Usage.Quota)
 			if status.IsError() || len(flavors) == 0 {
 				psAssignment.Flavors = nil
@@ -557,6 +567,13 @@ func (a *FlavorAssigner) findFlavorForPodSetResource(
 	resName corev1.ResourceName,
 	assignmentUsage resources.FlavorResourceQuantities,
 ) (ResourceAssignment, *Status) {
+	// 获取资源所属的资源组（ResourceGroup）
+	// 资源组定义了哪些 flavor 可以提供这种资源
+	// 如果资源组不存在，说明 ClusterQueue 不支持这种资源
+	//
+	// 将相关资源归组（如 CPU 和内存属于同一节点资源组）
+	// 同组资源必须使用相同的 flavor
+	// 减少 flavor 组合的复杂性
 	resourceGroup := a.cq.RGByResource(resName)
 	if resourceGroup == nil {
 		return nil, &Status{
@@ -573,6 +590,9 @@ func (a *FlavorAssigner) findFlavorForPodSetResource(
 	bestAssignmentMode := noFit
 
 	// We will only check against the flavors' labels for the resource.
+	// 根据 Pod 的 nodeSelector 和 nodeAffinity 创建选择器
+	// 只考虑资源组允许的标签键
+	// 用于后续匹配 flavor 的节点标签
 	selector := flavorSelector(podSpec, resourceGroup.LabelKeys)
 	attemptedFlavorIdx := -1
 	idx := a.wl.LastAssignment.NextFlavorToTryForPodSetResource(psID, resName)
@@ -592,6 +612,8 @@ func (a *FlavorAssigner) findFlavorForPodSetResource(
 				continue
 			}
 		}
+		// 检查 Pod 是否能容忍 flavor 节点上的污点
+		// 考虑 Pod 自身的 tolerations 和 flavor 提供的额外 tolerations
 		taint, untolerated := corev1helpers.FindMatchingUntoleratedTaint(flavor.Spec.NodeTaints, append(podSpec.Tolerations, flavor.Spec.Tolerations...), func(t *corev1.Taint) bool {
 			return t.Effect == corev1.TaintEffectNoSchedule || t.Effect == corev1.TaintEffectNoExecute
 		})
@@ -611,10 +633,12 @@ func (a *FlavorAssigner) findFlavorForPodSetResource(
 		assignments := make(ResourceAssignment, len(requests))
 		// Calculate representativeMode for this assignment as the worst mode among all requests.
 		representativeMode := fit
+		// 资源配额检查
 		for rName, val := range requests {
 			resQuota := a.cq.QuotaFor(resources.FlavorResource{Flavor: fName, Resource: rName})
 			// Check considering the flavor usage by previous pod sets.
 			fr := resources.FlavorResource{Flavor: fName, Resource: rName}
+			// 分配资源
 			mode, borrow, s := a.fitsResourceQuota(log, fr, val+assignmentUsage[fr], resQuota)
 			if s != nil {
 				status.reasons = append(status.reasons, s.reasons...)
@@ -694,6 +718,7 @@ func shouldTryNextFlavor(representativeMode granularMode, flavorFungibility kueu
 func flavorSelector(spec *corev1.PodSpec, allowedKeys sets.Set[string]) nodeaffinity.RequiredNodeAffinity {
 	// This function generally replicates the implementation of kube-scheduler's NodeAffinity
 	// Filter plugin as of v1.24.
+
 	var specCopy corev1.PodSpec
 
 	// Remove affinity constraints with irrelevant keys.
@@ -743,19 +768,68 @@ func flavorSelector(spec *corev1.PodSpec, allowedKeys sets.Set[string]) nodeaffi
 // if borrowing is required when preempting.
 // If the flavor doesn't satisfy limits immediately (when waiting or preemption
 // could help), it returns a Status with reasons.
+//
+// fitsResourceQuota 检查特定 flavor 和资源的配额情况，返回三种可能的调度模式：
+// fit - 有足够资源，可以立即调度
+// preempt - 需要抢占其他 workload 才能调度
+// noFit - 无法调度，即使抢占也不行
 func (a *FlavorAssigner) fitsResourceQuota(log logr.Logger, fr resources.FlavorResource, val int64, rQuota cache.ResourceQuota) (granularMode, int, *Status) {
+	// available - 当前实际可用的资源（考虑当前使用量）
+	// maxCapacity - 理论最大可用资源（假设没有任何使用量）
 	var status Status
 
 	available := a.cq.Available(fr)
+	// 计算在理想情况下（假设没有任何资源使用）cq 能够获得的最大资源容量，
 	maxCapacity := a.cq.PotentialAvailable(fr)
 
 	// No Fit
+	// 请求的资源超过能获得的资源
+	// 理论容量检查（快速拒绝）
+	// 如果请求量超过理论最大容量，立即拒绝
+	// 这是最快的拒绝路径，避免后续复杂计算
+	// 即使抢占所有其他 workload 也无法满足
 	if val > maxCapacity {
 		status.appendf("insufficient quota for %s in flavor %s, request > maximum capacity (%s > %s)",
 			fr.Resource, fr.Flavor, resources.ResourceQuantityString(fr.Resource, val), resources.ResourceQuantityString(fr.Resource, maxCapacity))
 		return noFit, 0, &status
 	}
 
+	// 这个函数计算两个重要信息：
+	// borrow (借用高度):
+	//
+	// 0 - 不需要借用，本地资源足够
+	// 1 - 需要从父节点借用
+	// 2 - 需要从祖父节点借用
+	// n - 需要从第n层祖先借用
+	//
+	// mayReclaimInHierarchy (层级回收可能性):
+	//
+	// true - 可以在层级结构中回收资源
+	// false - 无法在层级中找到足够资源
+	//
+	// 三层结构:
+	// Root-Cohort (2000 CPU)
+	// └── Dept-Cohort (800 CPU, 使用 600 CPU)
+	//     └── Team-CQ (300 CPU, 使用 250 CPU, 请求 400 CPU)
+	//
+	// 计算过程:
+	// 1. Team-CQ 本地可用: 300 - 250 = 50 CPU (不够)
+	// 2. 需要从 Dept-Cohort 借用: 800 - 600 = 200 CPU (还是不够)
+	// 3. 需要从 Root-Cohort 借用: 2000 - 总使用量 = 足够
+	//
+	// 结果: borrow = 2, mayReclaimInHierarchy = true
+	//
+	// 第二个返回值有点迷
+	// 没找到或者根节点满足会返回 false
+	// 子树中找到会返回 true
+	//
+	// 第二个返回值的真正含义是：
+	// true - 找到了比整个层级更小的子树，可以在局部范围内回收资源
+	// false - 需要使用整个层级的资源，影响范围更大
+	// 这不是"能否抢占"的判断，而是"抢占影响范围"的判断：
+
+	// true → 局部抢占，影响小，优先考虑
+	// false → 全局抢占，影响大，需要更严格的条件
 	borrow, mayReclaimInHierarchy := classical.FindHeightOfLowestSubtreeThatFits(a.cq, fr, val)
 	// Fit
 	if val <= available {
@@ -766,7 +840,12 @@ func (a *FlavorAssigner) fitsResourceQuota(log logr.Logger, fr resources.FlavorR
 	status.appendf("insufficient unused quota for %s in flavor %s, %s more needed",
 		fr.Resource, fr.Flavor, resources.ResourceQuantityString(fr.Resource, val-available))
 
+	// 满足下面任意一个条件，可以尝试抢占
+	// val <= rQuota.Nominal 请求量不超过名义配额 可以抢占自己配额内的其他 workload
+	// mayReclaimInHierarchy 可以在层级结构中回收资源 可以通过抢占父节点或兄弟节点的 workload 来获得资源
+	// a.canPreemptWhileBorrowing()
 	if val <= rQuota.Nominal || mayReclaimInHierarchy || a.canPreemptWhileBorrowing() {
+		// 抢占模拟
 		mode := fromPreemptionPossibility(a.oracle.SimulatePreemption(log, a.cq, *a.wl, fr, val))
 		return mode, borrow, &status
 	}

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 
+	 
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -80,7 +81,8 @@ func addTo(o *ctrl.Options, cfg *configapi.Configuration) {
 		if cfg.Webhook.CertDir != "" {
 			wo.CertDir = cfg.Webhook.CertDir
 		}
-		o.WebhookServer = webhook.NewServer(wo)
+		// FIXME: 本地调试干掉所有 webhook
+		//o.WebhookServer = webhook.NewServer(wo)
 	}
 
 	if cfg.Controller != nil {

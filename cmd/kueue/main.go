@@ -234,7 +234,7 @@ func main() {
 
 	serverVersionFetcher := setupServerVersionFetcher(mgr, kubeConfig)
 
-	setupProbeEndpoints(mgr, certsReady)
+	//setupProbeEndpoints(mgr, certsReady)
 	// Cert won't be ready until manager starts, so start a goroutine here which
 	// will block until the cert is ready before setting up the controllers.
 	// Controllers who register after manager starts will start directly.
@@ -295,7 +295,10 @@ func setupIndexes(ctx context.Context, mgr ctrl.Manager, cfg *configapi.Configur
 func setupControllers(ctx context.Context, mgr ctrl.Manager, cCache *cache.Cache, queues *queue.Manager, certsReady chan struct{}, cfg *configapi.Configuration, serverVersionFetcher *kubeversion.ServerVersionFetcher) {
 	// The controllers won't work until the webhooks are operating, and the webhook won't work until the
 	// certs are all in place.
-	cert.WaitForCertsReady(setupLog, certsReady)
+
+	// 本地调试暂时去掉
+	// 求掉这个有啥影响？
+	// cert.WaitForCertsReady(setupLog, certsReady)
 
 	if failedCtrl, err := core.SetupControllers(mgr, queues, cCache, cfg); err != nil {
 		setupLog.Error(err, "Unable to create controller", "controller", failedCtrl)
@@ -344,10 +347,10 @@ func setupControllers(ctx context.Context, mgr ctrl.Manager, cCache *cache.Cache
 		}
 	}
 
-	if failedWebhook, err := webhooks.Setup(mgr); err != nil {
-		setupLog.Error(err, "Unable to create webhook", "webhook", failedWebhook)
-		os.Exit(1)
-	}
+	// if failedWebhook, err := webhooks.Setup(mgr); err != nil {
+	// 	setupLog.Error(err, "Unable to create webhook", "webhook", failedWebhook)
+	// 	os.Exit(1)
+	// }
 
 	opts := []jobframework.Option{
 		jobframework.WithManageJobsWithoutQueueName(cfg.ManageJobsWithoutQueueName),

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
@@ -190,6 +191,10 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 	startTime := s.clock.Now()
 
 	// 2. Take a snapshot of the cache.
+	// 2. 创建集群状态快照
+	// 创建当前集群资源状态的一致性快照
+	//	包含所有ClusterQueue、Cohort、ResourceFlavor的状态
+	//	确保整个调度周期使用相同的资源视图
 	snapshot, err := s.cache.Snapshot(ctx)
 	if err != nil {
 		log.Error(err, "failed to build snapshot for scheduling")
@@ -198,9 +203,21 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 	logSnapshotIfVerbose(log, snapshot)
 
 	// 3. Calculate requirements (resource flavors, borrowing) for admitting workloads.
+	// 计算资源需求和分配方案
+	// 每个workload计算资源分配方案
+	// 检查基础条件（命名空间匹配、资源验证等）
+	// 调用FlavorAssigner分配具体的资源flavor
+	// 返回两个列表：
+	// entries - 可能可以调度的workload
+	// inadmissibleEntries - 明确不能调度的workload
 	entries, inadmissibleEntries := s.nominate(ctx, headWorkloads, snapshot)
 
 	// 4. Create iterator which returns ordered entries.
+	// 4. 创建按优先级排序的迭代器
+	// 	已有配额预留的workload优先
+	// 不需要借用资源的workload优先
+	// 优先级高的workload优先（如果启用）
+	// FIFO顺序（按创建或驱逐时间）
 	iterator := makeIterator(ctx, entries, s.workloadOrdering, s.fairSharing.Enable)
 
 	// 5. Admit entries, ensuring that no more than one workload gets
@@ -305,6 +322,8 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 	}
 
 	// 6. Requeue the heads that were not scheduled.
+	// 6. 重新排队未调度的workload
+
 	result := metrics.AdmissionResultInadmissible
 	for _, e := range entries {
 		logAdmissionAttemptIfVerbose(log, &e)
@@ -364,6 +383,8 @@ func (e *entry) assignmentUsage() workload.Usage {
 // nominate returns the workloads with their requirements (resource flavors, borrowing) if
 // they were admitted by the clusterQueues in the snapshot. The second return value
 // is the list of inadmissibleEntries.
+//
+// 预筛选
 func (s *Scheduler) nominate(ctx context.Context, workloads []workload.Info, snap *cache.Snapshot) ([]entry, []entry) {
 	log := ctrl.LoggerFrom(ctx)
 	entries := make([]entry, 0, len(workloads))
@@ -373,17 +394,23 @@ func (s *Scheduler) nominate(ctx context.Context, workloads []workload.Info, sna
 		ns := corev1.Namespace{}
 		e := entry{Info: w}
 		e.clusterQueueSnapshot = snap.ClusterQueue(w.ClusterQueue)
+		// 跳过已经在缓存中且不需要二次调度的workload，避免重复处理
 		if !workload.NeedsSecondPass(w.Obj) && s.cache.IsAssumedOrAdmittedWorkload(w) {
 			log.Info("Workload skipped from admission because it's already accounted in cache, and it does not need second pass", "workload", klog.KObj(w.Obj))
 			continue
+			// 检查workload的准入检查是否失败或需要重试
 		} else if workload.HasRetryChecks(w.Obj) || workload.HasRejectedChecks(w.Obj) {
 			e.inadmissibleMsg = "The workload has failed admission checks"
+			// 确保目标ClusterQueue处于活跃状态
 		} else if snap.InactiveClusterQueueSets.Has(w.ClusterQueue) {
 			e.inadmissibleMsg = fmt.Sprintf("ClusterQueue %s is inactive", w.ClusterQueue)
+			// 验证ClusterQueue是否存在
 		} else if e.clusterQueueSnapshot == nil {
 			e.inadmissibleMsg = fmt.Sprintf("ClusterQueue %s not found", w.ClusterQueue)
+			// 确保能够获取workload所在的命名空间信息
 		} else if err := s.client.Get(ctx, types.NamespacedName{Name: w.Obj.Namespace}, &ns); err != nil {
 			e.inadmissibleMsg = fmt.Sprintf("Could not obtain workload namespace: %v", err)
+			//
 		} else if !e.clusterQueueSnapshot.NamespaceSelector.Matches(labels.Set(ns.Labels)) {
 			e.inadmissibleMsg = "Workload namespace doesn't match ClusterQueue selector"
 			e.requeueReason = queue.RequeueReasonNamespaceMismatch
@@ -392,6 +419,9 @@ func (s *Scheduler) nominate(ctx context.Context, workloads []workload.Info, sna
 		} else if err := workload.ValidateLimitRange(ctx, s.client, &w); err != nil {
 			e.inadmissibleMsg = fmt.Sprintf("%s: %v", errLimitRangeConstraintsUnsatisfiedResources, err.ToAggregate())
 		} else {
+			// 检查全部通过
+			// 尝试资源分配
+			// 尝试为workload分配资源flavor
 			e.assignment, e.preemptionTargets = s.getAssignments(log, &e.Info, snap)
 			e.inadmissibleMsg = e.assignment.Message()
 			e.LastAssignment = &e.assignment.LastState
@@ -465,6 +495,7 @@ func (s *Scheduler) getAssignments(log logr.Logger, wl *workload.Info, snap *cac
 func (s *Scheduler) getInitialAssignments(log logr.Logger, wl *workload.Info, snap *cache.Snapshot) (flavorassigner.Assignment, []*preemption.Target) {
 	cq := snap.ClusterQueue(wl.ClusterQueue)
 	flvAssigner := flavorassigner.New(wl, cq, snap.ResourceFlavors, s.fairSharing.Enable, preemption.NewOracle(s.preemptor, snap))
+	// 主要逻辑在这里
 	fullAssignment := flvAssigner.Assign(log, nil)
 
 	arm := fullAssignment.RepresentativeMode()
@@ -609,6 +640,7 @@ func (e entryOrdering) Less(i, j int) bool {
 
 	// First process workloads which already have quota reserved. Such workload
 	// may be considered if this is their second pass.
+
 	aHasQuota := workload.HasQuotaReservation(a.Obj)
 	bHasQuota := workload.HasQuotaReservation(b.Obj)
 	if aHasQuota != bHasQuota {

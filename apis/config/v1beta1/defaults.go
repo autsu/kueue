@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -72,7 +73,7 @@ func getOperatorNamespace() string {
 func SetDefaults_Configuration(cfg *Configuration) {
 	cfg.Namespace = cmp.Or(cfg.Namespace, ptr.To(getOperatorNamespace()))
 	cfg.Webhook.Port = cmp.Or(cfg.Webhook.Port, ptr.To(DefaultWebhookPort))
-	cfg.Webhook.CertDir = cmp.Or(cfg.Webhook.CertDir, DefaultWebhookCertDir)
+	//cfg.Webhook.CertDir = cmp.Or(cfg.Webhook.CertDir, DefaultWebhookCertDir)
 	cfg.Metrics.BindAddress = cmp.Or(cfg.Metrics.BindAddress, DefaultMetricsBindAddress)
 	cfg.Health.HealthProbeBindAddress = cmp.Or(cfg.Health.HealthProbeBindAddress, DefaultHealthProbeBindAddress)
 	cfg.LeaderElection = cmp.Or(cfg.LeaderElection, &configv1alpha1.LeaderElectionConfiguration{})

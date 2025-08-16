@@ -18,7 +18,9 @@ package deployment
 
 import (
 	"context"
+	"fmt"
 
+	 
 	appsv1 "k8s.io/api/apps/v1"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/labels"
@@ -52,6 +54,7 @@ func SetupWebhook(mgr ctrl.Manager, opts ...jobframework.Option) error {
 		queues:                       options.Queues,
 	}
 	obj := &appsv1.Deployment{}
+	fmt.Println("webhook fuck it")
 	return webhook.WebhookManagedBy(mgr).
 		For(obj).
 		WithMutationHandler(admission.WithCustomDefaulter(mgr.GetScheme(), obj, wh)).

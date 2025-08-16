@@ -18,6 +18,7 @@ package classical
 
 import (
 	"k8s.io/apimachinery/pkg/util/sets"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta1"
 	"sigs.k8s.io/kueue/pkg/cache"
@@ -65,6 +66,7 @@ type HierarchicalPreemptionCtx struct {
 	WorkloadOrdering  workload.Ordering
 }
 
+// 检查是否禁止在 cohort 内借用时抢占
 func IsBorrowingWithinCohortForbidden(cq *cache.ClusterQueueSnapshot) (bool, *int32) {
 	borrowWithinCohort := cq.Preemption.BorrowWithinCohort
 	if borrowWithinCohort == nil || borrowWithinCohort.Policy == kueue.BorrowWithinCohortPolicyNever {
@@ -76,27 +78,57 @@ func IsBorrowingWithinCohortForbidden(cq *cache.ClusterQueueSnapshot) (bool, *in
 // classifyPreemptionVariant evaluates, based on config and priorities, the
 // preemption type for a given candidate
 func classifyPreemptionVariant(ctx *HierarchicalPreemptionCtx, wl *workload.Info, haveHierarchicalAdvantage bool) preemptionVariant {
+
+	setupLog := ctrl.Log.WithName("classical-preemption").WithValues(
+		"preemptor", ctx.Wl.Name,
+		"preemptorCQ", ctx.Cq.Name,
+		"candidate", wl.Obj.Name,
+		"candidateCQ", wl.ClusterQueue,
+	)
+
 	if !WorkloadUsesResources(wl, ctx.FrsNeedPreemption) {
+		setupLog.V(2).Info("Candidate doesn't use resources needed for preemption", "result", "Never")
 		return Never
 	}
+
 	incomingPriority := priority.Priority(ctx.Wl)
 	candidatePriority := priority.Priority(wl.Obj)
+	setupLog.V(2).Info("Priority comparison",
+		"incomingPriority", incomingPriority,
+		"candidatePriority", candidatePriority,
+		"hierarchicalAdvantage", haveHierarchicalAdvantage)
+
 	if !satisfiesPreemptionPolicy(ctx, wl, incomingPriority, candidatePriority) {
+		setupLog.V(2).Info("Candidate doesn't satisfy preemption policy", "result", "Never")
 		return Never
 	}
+
 	if wl.ClusterQueue == ctx.Cq.Name {
+		setupLog.V(2).Info("Same ClusterQueue preemption", "result", "WithinCQ")
 		return WithinCQ
 	}
+
 	if haveHierarchicalAdvantage {
+		setupLog.V(2).Info("Hierarchical advantage preemption", "result", "HierarchicalReclaim")
 		return HiearchicalReclaim
 	}
+
 	borrowWithinCohortForbidden, borrowWithinCohortThreshold := IsBorrowingWithinCohortForbidden(ctx.Cq)
+	setupLog.V(2).Info("BorrowWithinCohort check",
+		"forbidden", borrowWithinCohortForbidden,
+		"threshold", borrowWithinCohortThreshold)
+
 	if borrowWithinCohortForbidden {
+		setupLog.V(2).Info("Borrowing within cohort forbidden", "result", "ReclaimWithoutBorrowing")
 		return ReclaimWithoutBorrowing
 	}
+
 	if isAboveBorrowingThreshold(candidatePriority, incomingPriority, borrowWithinCohortThreshold) {
+		setupLog.V(2).Info("Above borrowing threshold", "result", "ReclaimWithoutBorrowing")
 		return ReclaimWithoutBorrowing
 	}
+
+	setupLog.V(2).Info("Can reclaim while borrowing", "result", "ReclaimWhileBorrowing")
 	return ReclaimWhileBorrowing
 }
 
@@ -184,8 +216,9 @@ func collectCandidatesForHierarchicalReclaim(ctx *HierarchicalPreemptionCtx) ([]
 // visit the nodes in the hierarchy and collect the ones that exceed quota
 // avoid subtrees that are within quota and the skipped subtree
 func collectCandidatesInSubtree(ctx *HierarchicalPreemptionCtx, currentCohort *cache.CohortSnapshot, subtreeRoot *cache.CohortSnapshot, skipSubtree *cache.CohortSnapshot, hasHierarchicalAdvantage bool, result *[]*candidateElem) {
+	// we already processed this subtree
 	for _, childCohort := range currentCohort.ChildCohorts() {
-		// we already processed this subtree
+
 		if childCohort == skipSubtree {
 			continue
 		}
@@ -218,15 +251,38 @@ func getNodeHeight(node *cache.CohortSnapshot) int {
 // that fits additional val of resource fr. If no such subtree exists, it returns
 // height the whole cohort hierarchy. Note that height of a trivial subtree
 // with only one node is 0. It also returns if the returned subtree is smaller than the whole cohort tree.
+//
+// 这个函数的目的是找到能够容纳额外资源请求的最小子树，并返回该子树的高度。换句话说，
+// 它要回答："我需要向上借用到第几层才能满足资源需求？"
 func FindHeightOfLowestSubtreeThatFits(c *cache.ClusterQueueSnapshot, fr resources.FlavorResource, val int64) (int, bool) {
+	// !c.BorrowingWith(fr, val) 当前使用量 + 请求量 <= 名义配额，则不需要借用
+	// !c.HasParent 代表都没父节点，无处可以借用
+
 	if !c.BorrowingWith(fr, val) || !c.HasParent() {
+		// 返回 (0, c.HasParent())，表示高度为0（本地资源足够）
 		return 0, c.HasParent()
 	}
+
+	// LocalAvailable 的含义：
+	// func LocalAvailable(node flatResourceNode, fr resources.FlavorResource) int64 {
+	//     return max(0, node.getResourceNode().guaranteedQuota(fr)-node.getResourceNode().Usage[fr])
+	// }
+	// 本地保证配额中未使用的部分
+	// guaranteedQuota - Usage 的正数部分
+	// 请求: 500 CPU
+	// LocalAvailable: 200 CPU (本地可用)
+	// remaining = 500 - 200 = 300 CPU (需要从父节点借用)
 	remaining := val - cache.LocalAvailable(c, fr)
+	// 向上遍历寻找合适的子树
 	for trackingNode := range c.PathParentToRoot() {
+		// 找到资源满足的节点了
+		// return c.ResourceNode.Usage[fr]+val > c.ResourceNode.SubtreeQuota[fr]
 		if !trackingNode.BorrowingWith(fr, remaining) {
+			// 返回高度
+			// 走到这里说明 c 必定不是根节点，所以第二个返回值必定是 true？
 			return getNodeHeight(trackingNode), trackingNode.HasParent()
 		}
+		// 还需要继续借用
 		remaining -= cache.LocalAvailable(trackingNode, fr)
 	}
 	// no fit found

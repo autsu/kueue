@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -124,6 +125,7 @@ func (p *Preemptor) GetTargets(log logr.Logger, wl workload.Info, assignment fla
 }
 
 func (p *Preemptor) getTargets(preemptionCtx *preemptionCtx) []*Target {
+	// ([]interface{}{p, preemptionCtx})()
 	if p.enableFairSharing {
 		return p.fairPreemptions(preemptionCtx, p.fsStrategies)
 	}
@@ -208,6 +210,13 @@ type preemptionAttemptOpts struct {
 // reverse order in which they were removed, while the incoming Workload still
 // fits
 func (p *Preemptor) classicalPreemptions(preemptionCtx *preemptionCtx) []*Target {
+	setupLog := ctrl.Log.WithName("classical-preemption-main").WithValues(
+		"preemptor", preemptionCtx.preemptor.Obj.Name,
+		"preemptorCQ", preemptionCtx.preemptorCQ.Name,
+		"resourcesNeeded", preemptionCtx.frsNeedPreemption,
+	)
+	setupLog.Info("Starting classical preemption algorithm")
+
 	hierarchicalReclaimCtx := &classical.HierarchicalPreemptionCtx{
 		Wl:                preemptionCtx.preemptor.Obj,
 		Cq:                preemptionCtx.preemptorCQ,
@@ -218,6 +227,11 @@ func (p *Preemptor) classicalPreemptions(preemptionCtx *preemptionCtx) []*Target
 	candidatesGenerator := classical.NewCandidateIterator(hierarchicalReclaimCtx, preemptionCtx.frsNeedPreemption, preemptionCtx.snapshot, p.clock, CandidatesOrdering)
 	var attemptPossibleOpts []preemptionAttemptOpts
 	borrowWithinCohortForbidden, _ := classical.IsBorrowingWithinCohortForbidden(preemptionCtx.preemptorCQ)
+
+	setupLog.V(1).Info("Preemption context analysis",
+		"borrowWithinCohortForbidden", borrowWithinCohortForbidden,
+		"noCandidateFromOtherQueues", candidatesGenerator.NoCandidateFromOtherQueues,
+		"noCandidateForHierarchicalReclaim", candidatesGenerator.NoCandidateForHierarchicalReclaim)
 	// We have three types of candidates:
 	// 1. Hierarchy candidates. Candidates over which the incoming workload has a
 	// 	  hierarchical advantage (it is closer to the quota used by the candidate).
@@ -236,29 +250,67 @@ func (p *Preemptor) classicalPreemptions(preemptionCtx *preemptionCtx) []*Target
 	switch {
 	case candidatesGenerator.NoCandidateFromOtherQueues || (borrowWithinCohortForbidden && !queueUnderNominalInResourcesNeedingPreemption(preemptionCtx)):
 		attemptPossibleOpts = []preemptionAttemptOpts{{true}}
+		setupLog.V(1).Info("Preemption strategy: only same queue candidates", "allowBorrowing", true)
 	case borrowWithinCohortForbidden && candidatesGenerator.NoCandidateForHierarchicalReclaim:
 		attemptPossibleOpts = []preemptionAttemptOpts{{false}, {true}}
+		setupLog.V(1).Info("Preemption strategy: try without borrowing first, then with borrowing")
 	default:
 		attemptPossibleOpts = []preemptionAttemptOpts{{true}, {false}}
+		setupLog.V(1).Info("Preemption strategy: try with borrowing first, then without borrowing")
 	}
 
-	for _, attemptOpts := range attemptPossibleOpts {
+	for attemptIdx, attemptOpts := range attemptPossibleOpts {
+		setupLog.V(1).Info("Starting preemption attempt",
+			"attemptIndex", attemptIdx,
+			"allowBorrowing", attemptOpts.borrowing)
+
 		var targets []*Target
 		candidatesGenerator.Reset()
+		candidateCount := 0
 		for candidate, reason := candidatesGenerator.Next(attemptOpts.borrowing); candidate != nil; candidate, reason = candidatesGenerator.Next(attemptOpts.borrowing) {
+			candidateCount++
+			setupLog.V(2).Info("Evaluating preemption candidate",
+				"candidateIndex", candidateCount,
+				"candidate", candidate.Obj.Name,
+				"candidateCQ", candidate.ClusterQueue,
+				"reason", reason)
+
 			preemptionCtx.snapshot.RemoveWorkload(candidate)
 			targets = append(targets, &Target{
 				WorkloadInfo: candidate,
 				Reason:       reason,
 			})
+
 			if workloadFits(preemptionCtx, attemptOpts.borrowing) {
+				setupLog.V(1).Info("Workload fits after preempting candidates",
+					"preemptedCount", len(targets),
+					"allowBorrowing", attemptOpts.borrowing)
+
 				targets = fillBackWorkloads(preemptionCtx, targets, attemptOpts.borrowing)
+				setupLog.Info("Classical preemption successful",
+					"finalPreemptedCount", len(targets),
+					"preemptedWorkloads", func() []string {
+						names := make([]string, len(targets))
+						for i, t := range targets {
+							names[i] = t.WorkloadInfo.Obj.Name
+						}
+						return names
+					}())
+
 				restoreSnapshot(preemptionCtx.snapshot, targets)
 				return targets
 			}
 		}
+
+		setupLog.V(1).Info("Preemption attempt failed",
+			"attemptIndex", attemptIdx,
+			"candidatesEvaluated", candidateCount,
+			"allowBorrowing", attemptOpts.borrowing)
+
 		restoreSnapshot(preemptionCtx.snapshot, targets)
 	}
+
+	setupLog.Info("Classical preemption failed - no viable preemption found")
 	return nil
 }
 
