@@ -21,7 +21,6 @@ package heap
 
 import (
 	"container/heap"
-	 
 )
 
 // lessFunc is a function that receives two items and returns true if the first
@@ -72,11 +71,11 @@ func (h *data[T, K]) Less(i, j int) bool {
 
 // Len returns the number of items in the Heap.
 func (h *data[T, K]) Len() int {
-	// Swap implements swapping of two elements in the heap. This is a part of standard
-	// heap interface and should never be called directly.
 	return len(h.keys)
 }
 
+// Swap implements swapping of two elements in the heap. This is a part of standard
+// heap interface and should never be called directly.
 func (h *data[T, K]) Swap(i, j int) {
 	h.keys[i], h.keys[j] = h.keys[j], h.keys[i]
 	h.items[h.keys[i]].index = i
