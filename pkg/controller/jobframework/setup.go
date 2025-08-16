@@ -104,9 +104,9 @@ func (m *integrationManager) setupControllers(ctx context.Context, mgr ctrl.Mana
 				}
 			}
 		}
-		if err := setupNoopWebhook(mgr, cb.JobType); err != nil {
-			return fmt.Errorf("%s: unable to create noop webhook: %w", fwkNamePrefix, err)
-		}
+		// if err := setupNoopWebhook(mgr, cb.JobType); err != nil {
+		// 	return fmt.Errorf("%s: unable to create noop webhook: %w", fwkNamePrefix, err)
+		// }
 		return nil
 	})
 }
@@ -128,9 +128,9 @@ func (m *integrationManager) setupControllerAndWebhook(mgr ctrl.Manager, name st
 			return fmt.Errorf("%s: %w", fwkNamePrefix, err)
 		}
 	}
-	if err := cb.SetupWebhook(mgr, opts...); err != nil {
-		return fmt.Errorf("%s: unable to create webhook: %w", fwkNamePrefix, err)
-	}
+	// if err := cb.SetupWebhook(mgr, opts...); err != nil {
+	// 	return fmt.Errorf("%s: unable to create webhook: %w", fwkNamePrefix, err)
+	// }
 	m.enableIntegration(name)
 	return nil
 }
