@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: preemption-test
+  name: low-priority-job-1
+  labels:
+    kueue.x-k8s.io/queue-name: high-priority-lq
+    kueue.x-k8s.io/priority-class: low-priority
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      annotations:
+        kueue.x-k8s.io/priority: "10"
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.35
+          command: ["sleep", "300"]
+          resources:
+            requests:
+              cpu: 2
+              memory: 4Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: preemption-test
+  name: low-priority-job-2
+  labels:
+    kueue.x-k8s.io/queue-name: high-priority-lq
+    kueue.x-k8s.io/priority-class: low-priority
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      annotations:
+        kueue.x-k8s.io/priority: "20"
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.35
+          command: ["sleep", "300"]
+          resources:
+            requests:
+              cpu: 2
+              memory: 4Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+      restartPolicy: Never

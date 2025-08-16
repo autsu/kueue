@@ -1,0 +1,15 @@
+apiVersion: config.kueue.x-k8s.io/v1beta1
+kind: Configuration
+namespace: kueue-system
+leaderElection:
+  leaderElect: false
+  # 或者如果需要启用 leader election：
+  # leaderElect: true
+  # resourceNamespace: kueue-system
+manageJobsWithoutQueueName: false
+# 禁用 VisibilityOnDemand feature gate 用于本地开发
+featureGates:
+  VisibilityOnDemand: false
+# 禁用内部证书管理，用于本地调试
+internalCertManagement:
+  enable: false

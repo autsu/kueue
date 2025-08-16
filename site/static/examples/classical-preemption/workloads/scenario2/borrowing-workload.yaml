@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: preemption-test
+  name: borrowing-job-1
+  labels:
+    kueue.x-k8s.io/queue-name: medium-priority-lq
+    kueue.x-k8s.io/priority-class: medium-priority
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      annotations:
+        kueue.x-k8s.io/priority: "50"
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.35
+          command: ["sleep", "300"]
+          resources:
+            requests:
+              cpu: 5 # 超过 medium-priority-cq 的名义配额 (3)，需要借用
+              memory: 10Gi # 超过名义配额 (6Gi)，需要借用
+            limits:
+              cpu: 5
+              memory: 10Gi
+      restartPolicy: Never

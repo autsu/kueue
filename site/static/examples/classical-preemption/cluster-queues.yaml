@@ -1,0 +1,76 @@
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: high-priority-cq
+spec:
+  cohort: preemption-cohort
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort:
+      policy: LowerPriority
+      maxPriorityThreshold: 100
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: default-flavor
+          resources:
+            - name: "cpu"
+              nominalQuota: 4
+              borrowingLimit: 2
+              lendingLimit: 2
+            - name: "memory"
+              nominalQuota: 8Gi
+              borrowingLimit: 4Gi
+              lendingLimit: 4Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: medium-priority-cq
+spec:
+  cohort: preemption-cohort
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: LowerPriority
+    borrowWithinCohort:
+      policy: LowerPriority
+      maxPriorityThreshold: 50
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: default-flavor
+          resources:
+            - name: "cpu"
+              nominalQuota: 3
+              borrowingLimit: 3
+              lendingLimit: 1
+            - name: "memory"
+              nominalQuota: 6Gi
+              borrowingLimit: 6Gi
+              lendingLimit: 2Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: low-priority-cq
+spec:
+  cohort: preemption-cohort
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Never
+    borrowWithinCohort:
+      policy: Never
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: default-flavor
+          resources:
+            - name: "cpu"
+              nominalQuota: 2
+              borrowingLimit: 4
+              lendingLimit: 2
+            - name: "memory"
+              nominalQuota: 4Gi
+              borrowingLimit: 8Gi
+              lendingLimit: 4Gi

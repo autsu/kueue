@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: preemption-test
+  name: high-priority-job
+  labels:
+    kueue.x-k8s.io/queue-name: high-priority-lq
+    kueue.x-k8s.io/priority-class: high-priority
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  template:
+    metadata:
+      annotations:
+        kueue.x-k8s.io/priority: "100"
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.35
+          command: ["sleep", "300"]
+          resources:
+            requests:
+              cpu: 3
+              memory: 6Gi
+            limits:
+              cpu: 3
+              memory: 6Gi
+      restartPolicy: Never

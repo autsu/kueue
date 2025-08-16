@@ -1,0 +1,23 @@
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: preemption-test
+  name: high-priority-lq
+spec:
+  clusterQueue: high-priority-cq
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: preemption-test
+  name: medium-priority-lq
+spec:
+  clusterQueue: medium-priority-cq
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: preemption-test
+  name: low-priority-lq
+spec:
+  clusterQueue: low-priority-cq
