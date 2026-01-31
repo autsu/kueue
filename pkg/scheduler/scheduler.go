@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	 
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
@@ -60,9 +60,7 @@ const (
 	errLimitRangeConstraintsUnsatisfiedResources = "resources didn't satisfy LimitRange constraints"
 )
 
-var (
-	realClock = clock.RealClock{}
-)
+var realClock = clock.RealClock{}
 
 type Scheduler struct {
 	queues                  *queue.Manager
@@ -237,6 +235,9 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 		}
 		ctx := ctrl.LoggerInto(ctx, log)
 
+		// 计算整个 Workload 资源分配的代表性模式
+		// 返回所有 PodSet 中最差的分配模式
+		// 使用缓存避免重复计算
 		mode := e.assignment.RepresentativeMode()
 
 		if features.Enabled(features.TASFailedNodeReplacementFailFast) && workload.HasTopologyAssignmentWithNodeToReplace(e.Obj) && mode != flavorassigner.Fit {
@@ -249,12 +250,16 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 			continue
 		}
 
+		// 如果分配模式为 NoFit，则跳过调度
 		if mode == flavorassigner.NoFit {
 			log.V(3).Info("Skipping workload as FlavorAssigner assigned NoFit mode")
 			continue
 		}
 		log.V(2).Info("Attempting to schedule workload")
 
+		// Workload 需要抢占资源（mode == flavorassigner.Preempt）
+		// 但是没有找到可以抢占的目标（len(e.preemptionTargets) == 0）
+		// 这意味着虽然理论上可以抢占，但实际没有合适的候选 Workload 可以被抢占
 		if mode == flavorassigner.Preempt && len(e.preemptionTargets) == 0 {
 			log.V(2).Info("Workload requires preemption, but there are no candidate workloads allowed for preemption", "preemption", cq.Preemption)
 			// we reserve capacity if we are uncertain
@@ -262,24 +267,80 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 			// later. Otherwise, we allow other workloads
 			// in the Cohort to borrow this capacity,
 			// confident we can reclaim it later.
+			//
+			// apiVersion: kueue.x-k8s.io/v1beta1
+			// kind: ClusterQueue
+			// metadata:
+			//   name: "team-a-cq"
+			// spec:
+			//   preemption:
+			//     reclaimWithinCohort: Any <- 这里
+			//
+			// reclaimWithinCohort: Any 表示可以抢占任何 Workload
+			// reclaimWithinCohort: LowerPriority 表示只能抢占优先级低于当前 Workload 的 Workload
+			// reclaimWithinCohort: Never 表示不能抢占任何 Workload
+			//
+			// 如果 reclaimWithinCohort 不是 Any，则需要预留资源，防止其他 Workload 抢占资源
 			if !preemption.CanAlwaysReclaim(cq) {
 				// reserve capacity up to the
 				// borrowing limit, so that
 				// lower-priority workloads in another
 				// Cohort cannot admit before us.
+				//
+				// 通过 AddUsage 预留资源，防止其他 Workload 抢占资源
 				cq.AddUsage(resourcesToReserve(e, cq))
 			}
 			continue
 		}
 
 		// We skip multiple-preemptions per cohort if any of the targets are overlapping
+		// 重叠抢占目标检查
+		// 在同一个调度周期中，多个 Workload 可能想要抢占同一个目标 Workload
+		// 这会导致资源冲突和调度不一致
+		//
+		// preemptedWorkloads：记录"哪些 Workload 已经被选中作为抢占目标"
+		// e.preemptionTargets：记录"当前 Workload 想要抢占哪些 Workload"
+
+		// 举个例子：
+		// # 假设集群状态：
+		// Workload-A (优先级: 100) -> 需要抢占 Workload-X
+		// Workload-B (优先级: 50)  -> 需要抢占 Workload-X  # 同一个目标！
+		// Workload-C (优先级: 10)  -> 需要抢占 Workload-Y
+		//
+		// 第一步：按照优先级依次处理，先处理 A
+		// 当前处理：Workload-A
+		// e.preemptionTargets = [Workload-X]
+		// 检查重叠
+		// if preemptedWorkloads.HasAny([Workload-X]) {
+		// preemptedWorkloads = {}，没有重叠
+		// }
+		//
+		// Workload-A 抢占成功
+		// preemptedWorkloads.Insert([Workload-X])
+		// 现在 preemptedWorkloads = {Workload-X}
+		//
+		// 第二步：按照优先级依次处理，再处理 B
+		// 当前处理：Workload-B
+		// e.preemptionTargets = [Workload-X]  # 也想抢占 Workload-X！
+		//
+		// 检查重叠
+		// if preemptedWorkloads.HasAny([Workload-X]) {
+		//     // preemptedWorkloads = {Workload-X}，发现重叠！
+		//     setSkipped(e, "Workload has overlapping preemption targets with another workload")
+		//     continue  // 跳过 Workload-B
+		// }
+
 		if preemptedWorkloads.HasAny(e.preemptionTargets) {
+			// 如果当前 Workload 的抢占目标与另一个 Workload 的抢占目标重叠
+			//（也就是现在这个 Workload 想要抢占的目标，已经被其他 Workload 抢占了）
+			// 则跳过当前 Workload 的调度
 			setSkipped(e, "Workload has overlapping preemption targets with another workload")
 			skippedPreemptions[cq.Name]++
 			continue
 		}
 
 		usage := e.assignmentUsage()
+		// 检查移除所有将被抢占的 Workload 后，当前 cq 的资源使用情况是否能适配当前 Workload
 		if !fits(cq, &usage, preemptedWorkloads, e.preemptionTargets) {
 			setSkipped(e, "Workload no longer fits after processing another workload")
 			if mode == flavorassigner.Preempt {
@@ -287,12 +348,89 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 			}
 			continue
 		}
+		// 记录被抢占的 Workload
 		preemptedWorkloads.Insert(e.preemptionTargets)
+		// 添加当前 Workload 的资源使用情况
 		cq.AddUsage(usage)
+
+		// 抢占判断的逻辑示例：
+
+		// 初始状态
+		// ClusterQueue: 100 CPU 配额，已使用 80 CPU，可用 20 CPU
+		// 现有 Workload：
+		// Workload-X: 使用 10 CPU (可被抢占)
+		// 待调度 Workload：
+		// Workload-A: 需要 25 CPU，抢占 Workload-X
+		// Workload-B: 需要 30 CPU，抢占 Workload-Y
+
+		// 处理 Workload-A：
+
+		// 1. 调用 fits 检查
+		// e.preemptionTargets = [Workload-X]  // 需要抢占 Workload-X
+		// usage = 25 CPU
+
+		// fits(cq, &usage, preemptedWorkloads, [Workload-X]):
+		//     // preemptedWorkloads = {} (空)
+		//     // workloads = [] + [Workload-X] = [Workload-X]
+
+		//     // 临时移除 Workload-X 的使用量
+		//     cq.RemoveUsage(20 CPU)
+		//     // CQ 当前状态：70 - 20 = 50 CPU 使用，可用 50 CPU
+
+		//     // 检查是否适配
+		//     cq.Fits(25 CPU)  // 50 >= 25，返回 true
+
+		//     // defer 执行：恢复 Workload-X 的使用量
+		//     // CQ 恢复状态：50 + 20 = 70 CPU 使用，可用 30 CPU
+		//     cq.AddUsage(20 CPU)
+		// // fits 返回 true
+
+		// // 2. 记录抢占目标
+		// preemptedWorkloads.Insert([Workload-X])
+		// // preemptedWorkloads = {Workload-X}
+
+		// // 3. 更新 CQ 使用量（这是关键！）
+		// cq.AddUsage(25 CPU)
+		// // CQ 新状态：70 + 25 = 95 CPU 使用，可用 5 CPU
+		// // 注意：虽然 Workload-X 还没真正被移除，但我们已经预留了 Workload-A 的资源
+
+		// 处理 Workload-B：
+		// 1. 调用 fits 检查
+		// e.preemptionTargets = [Workload-Y]  // 需要抢占 Workload-Y
+		// usage = 15 CPU
+
+		// fits(cq, &usage, preemptedWorkloads, [Workload-Y]):
+		//     // preemptedWorkloads = {Workload-X}
+		//     // workloads = [Workload-X] + [Workload-Y] = [Workload-X, Workload-Y]
+
+		//     // 临时移除 Workload-X 和 Workload-Y 的使用量
+		//     cq.RemoveUsage(20 CPU)  // Workload-X
+		//     cq.RemoveUsage(50 CPU)  // Workload-Y
+		//     // CQ 当前状态：95 - 20 - 50 = 25 CPU 使用，可用 75 CPU
+
+		//     // 检查是否适配
+		//     cq.Fits(15 CPU)  // 75 >= 15，返回 true
+
+		//     // defer 执行：恢复使用量
+		//     cq.AddUsage(20 CPU + 50 CPU)
+		//     // CQ 恢复状态：25 + 70 = 95 CPU 使用，可用 5 CPU
+		// // fits 返回 true
+
+		// // 2. 记录抢占目标
+		// preemptedWorkloads.Insert([Workload-Y])
+		// // preemptedWorkloads = {Workload-X, Workload-Y}
+
+		// // 3. 更新 CQ 使用量
+		// cq.AddUsage(15 CPU)
+		// // CQ 新状态：95 + 15 = 110 CPU 使用（超出配额！）
+		// 接下来会调用 IssuePreemptions 方法，更新抢占目标 Workload 的 condition 为 Evicted
+		// 然后 workload controller 会处理 Evicted 的 Workload
 
 		if e.assignment.RepresentativeMode() == flavorassigner.Preempt {
 			// If preemptions are issued, the next attempt should try all the flavors.
 			e.LastAssignment = nil
+			// 标记抢占目标 Workload 的 condition 为 Evicted
+			// 然后 workload controller 会处理 Evicted 的 Workload，释放掉 cq 中的资源
 			preempted, err := s.preemptor.IssuePreemptions(ctx, &e.Info, e.preemptionTargets)
 			if err != nil {
 				log.Error(err, "Failed to preempt workloads")
@@ -303,6 +441,10 @@ func (s *Scheduler) schedule(ctx context.Context) wait.SpeedSignal {
 			}
 			continue
 		}
+
+		// waitForPodsReady 特性，0.3.0 版本中引入
+		// 等待已准入的 Workload Pods 全部 Ready 后才准入新的
+		// TODO: 暂时先不看这部分的逻辑
 		if !s.cache.PodsReadyForAllAdmittedWorkloads(log) {
 			log.V(5).Info("Waiting for all admitted workloads to be in the PodsReady condition")
 			// If WaitForPodsReady is enabled and WaitForPodsReady.BlockAdmission is true
@@ -412,7 +554,10 @@ func (s *Scheduler) nominate(ctx context.Context, workloads []workload.Info, sna
 			e.inadmissibleMsg = fmt.Sprintf("Could not obtain workload namespace: %v", err)
 			//
 		} else if !e.clusterQueueSnapshot.NamespaceSelector.Matches(labels.Set(ns.Labels)) {
-			e.inadmissibleMsg = "Workload namespace doesn't match ClusterQueue selector"
+			e.inadmissibleMsg = fmt.Sprintf("Workload [%v/%v] namespace labels [%v] doesn't match ClusterQueue [%v] selector [%v]",
+				w.Obj.Namespace, w.Obj.Name, labels.Set(ns.Labels),
+				e.clusterQueueSnapshot.Name, e.clusterQueueSnapshot.NamespaceSelector)
+			// e.inadmissibleMsg = "Workload namespace doesn't match ClusterQueue selector"
 			e.requeueReason = queue.RequeueReasonNamespaceMismatch
 		} else if err := workload.ValidateResources(&w); err != nil {
 			e.inadmissibleMsg = fmt.Sprintf("%s: %v", errInvalidWLResources, err.ToAggregate())
@@ -434,12 +579,25 @@ func (s *Scheduler) nominate(ctx context.Context, workloads []workload.Info, sna
 }
 
 func fits(cq *cache.ClusterQueueSnapshot, usage *workload.Usage, preemptedWorkloads preemption.PreemptedWorkloads, newTargets []*preemption.Target) bool {
+	// 1. 收集所有将被抢占的 Workload
 	workloads := slices.Collect(maps.Values(preemptedWorkloads))
 	for _, target := range newTargets {
 		workloads = append(workloads, target.WorkloadInfo)
 	}
+
+	// 2. 模拟移除所有将被抢占的 Workload 的资源使用
+	// # 初始状态
+	// ClusterQueue: 100 CPU 配额，已使用 80 CPU，可用 20 CPU
+	// # Workload-A 需要 15 CPU，抢占 Workload-X (使用 10 CPU)
+	// # 抢占后状态：100 CPU 配额，已使用 70 CPU，可用 30 CPU
+	// # Workload-B 需要 25 CPU，也想抢占 Workload-X
+	// # 但 Workload-X 已经被 Workload-A 抢占
+	// # 检查：30 CPU 可用，25 CPU 需求 -> 可以调度
 	revertUsage := cq.SimulateWorkloadRemoval(workloads)
+	// 把模拟移除的资源使用恢复回来
 	defer revertUsage()
+
+	// 3. 检查移除所有将被抢占的 Workload 后，当前 Workload 是否能适配
 	return cq.Fits(*usage)
 }
 
@@ -581,11 +739,13 @@ func (s *Scheduler) admit(ctx context.Context, e *entry, cq *cache.ClusterQueueS
 		PodSetAssignments: e.assignment.ToAPI(),
 	}
 
+	// 3. 设置 Workload 的配额预留状态
 	workload.SetQuotaReservation(newWorkload, admission, s.clock)
 	if workload.HasAllChecks(newWorkload, workload.AdmissionChecksForWorkload(log, newWorkload, cq.AdmissionChecks)) {
 		// sync Admitted, ignore the result since an API update is always done.
 		_ = workload.SyncAdmittedCondition(newWorkload, s.clock.Now())
 	}
+	// 更新 clusterQueue 中 workload 的资源使用情况
 	if err := s.cache.AssumeWorkload(log, newWorkload); err != nil {
 		return err
 	}
@@ -593,6 +753,8 @@ func (s *Scheduler) admit(ctx context.Context, e *entry, cq *cache.ClusterQueueS
 	log.V(2).Info("Workload assumed in the cache")
 
 	s.admissionRoutineWrapper.Run(func() {
+		// 指向 func ApplyAdmissionStatus
+		// 使用 SSA（Server-Side Apply）更新 Workload 的 Status.Admission
 		err := s.applyAdmission(ctx, newWorkload)
 		if err == nil {
 			// Record metrics and events for quota reservation and admission

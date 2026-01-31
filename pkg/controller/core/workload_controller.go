@@ -784,17 +784,21 @@ func (r *WorkloadReconciler) Update(e event.TypedUpdateEvent[*kueue.Workload]) b
 		if !r.cache.AddOrUpdateWorkload(log, wlCopy) {
 			log.V(2).Info("ClusterQueue for workload didn't exist; ignored for now")
 		}
+		// workload 被驱逐
 	case (prevStatus == workload.StatusQuotaReserved || prevStatus == workload.StatusAdmitted) && status == workload.StatusPending:
+		// 1. 计算退避时间
 		var backoff time.Duration
 		if wlCopy.Status.RequeueState != nil && wlCopy.Status.RequeueState.RequeueAt != nil {
 			backoff = time.Until(e.ObjectNew.Status.RequeueState.RequeueAt.Time)
 		}
 		immediate := backoff <= 0
 		// trigger the move of associated inadmissibleWorkloads, if there are any.
+		//  2. 从 Cache 删除（释放资源）
 		r.queues.QueueAssociatedInadmissibleWorkloadsAfter(ctx, e.ObjectNew, func() {
 			// Delete the workload from cache while holding the queues lock
 			// to guarantee that requeued workloads are taken into account before
 			// the next scheduling cycle.
+			// 这里释放 cq 中 workload 的资源
 			if err := r.cache.DeleteWorkload(log, e.ObjectNew); err != nil {
 				log.Error(err, "Failed to delete workload from cache")
 			}

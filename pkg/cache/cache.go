@@ -616,6 +616,7 @@ func (c *Cache) DeleteWorkload(log logr.Logger, w *kueue.Workload) error {
 
 	c.cleanupAssumedState(log, w)
 
+	// 释放 cq 中 workload 的资源
 	cq.forgetWorkload(log, w)
 	if c.podsReadyTracking {
 		c.podsReadyCond.Broadcast()

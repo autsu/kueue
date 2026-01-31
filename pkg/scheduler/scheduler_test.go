@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -9173,4 +9174,15 @@ func TestScheduleForTASCohorts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNsMatch(t *testing.T) {
+	clusterNamespaceSelector := labels.NewSelector()
+	t.Log(clusterNamespaceSelector)
+	workloadNamespaceLabels := labels.Set(map[string]string{
+		"kubernetes.io/metadata.name": "preemption-test",
+		"name":                        "preemption-test",
+	})
+	match := clusterNamespaceSelector.Matches(workloadNamespaceLabels)
+	t.Log(match)
 }

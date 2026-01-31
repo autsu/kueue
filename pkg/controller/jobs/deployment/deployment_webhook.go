@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	 
 	appsv1 "k8s.io/api/apps/v1"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/labels"

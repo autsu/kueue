@@ -27,7 +27,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	 
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -113,7 +113,7 @@ func (a *Assignment) podSetAssignmentByName(psName kueue.PodSetReference) *PodSe
 // the worst assignment mode among all the pod sets.
 func (a *Assignment) RepresentativeMode() FlavorAssignmentMode {
 	if len(a.PodSets) == 0 {
-	// No assignments calculated.
+		// No assignments calculated.
 		return NoFit
 	}
 	if a.representativeMode != nil {
@@ -475,6 +475,8 @@ func (a *FlavorAssigner) assignFlavors(log logr.Logger, counts []int32) Assignme
 			}
 		}
 
+		log.Info("assignFlavors", "podSet", podSet)
+
 		for resName := range podSet.Requests {
 			if _, found := psAssignment.Flavors[resName]; found {
 				// This resource got assigned the same flavor as its resource group.
@@ -574,6 +576,7 @@ func (a *FlavorAssigner) findFlavorForPodSetResource(
 	// 将相关资源归组（如 CPU 和内存属于同一节点资源组）
 	// 同组资源必须使用相同的 flavor
 	// 减少 flavor 组合的复杂性
+	log.Info("findFlavorForPodSetResource", "resName", resName)
 	resourceGroup := a.cq.RGByResource(resName)
 	if resourceGroup == nil {
 		return nil, &Status{

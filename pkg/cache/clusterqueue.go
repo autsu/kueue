@@ -44,9 +44,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/workload"
 )
 
-var (
-	errQueueAlreadyExists = errors.New("queue already exists")
-)
+var errQueueAlreadyExists = errors.New("queue already exists")
 
 // clusterQueue is the internal implementation of kueue.clusterQueue that
 // holds admitted workloads.
@@ -481,13 +479,24 @@ func (q *LocalQueue) reportActiveWorkloads() {
 // and the number of admitted workloads for local queues.
 func (c *clusterQueue) updateWorkloadUsage(log logr.Logger, wi *workload.Info, op usageOp) {
 	admitted := workload.IsAdmitted(wi.Obj)
+	// 1. 获取 Workload 的资源使用情况
 	frUsage := wi.FlavorResourceUsage()
+	// frUsage = {
+	//     FlavorResource{Flavor: "default", Resource: "cpu"}:    20000000000,  // 20 CPU
+	//     FlavorResource{Flavor: "default", Resource: "memory"}: 42949672960,  // 40 Gi
+	// }
 	for fr, q := range frUsage {
 		if op == add {
 			addUsage(c, fr, q)
 		}
 		if op == subtract {
+			// 减少 ClusterQueue 的资源使用量
+			// ==========================================
 			removeUsage(c, fr, q)
+			// 参数：
+			// - c: ClusterQueue 对象
+			// - fr: FlavorResource（例如 "default/cpu"）
+			// - q: 资源量（例如 20 CPU）
 		}
 	}
 	c.updateWorkloadTASUsage(log, wi, op)

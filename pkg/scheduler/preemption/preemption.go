@@ -164,6 +164,7 @@ func (p *Preemptor) IssuePreemptions(ctx context.Context, preemptor *workload.In
 	ctx, cancel := context.WithCancel(ctx)
 	var successfullyPreempted atomic.Int64
 	defer cancel()
+	// 并行处理，更新 workload 的 condition 为 Evicted
 	workqueue.ParallelizeUntil(ctx, parallelPreemptions, len(targets), func(i int) {
 		target := targets[i]
 		if !meta.IsStatusConditionTrue(target.WorkloadInfo.Obj.Status.Conditions, kueue.WorkloadEvicted) {

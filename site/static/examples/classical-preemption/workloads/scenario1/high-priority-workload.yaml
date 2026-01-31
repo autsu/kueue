@@ -13,7 +13,7 @@ spec:
   template:
     metadata:
       annotations:
-        kueue.x-k8s.io/priority: "100"
+        kueue.x-k8s.io/priority: "100" # 这个没卵用
     spec:
       containers:
         - name: worker

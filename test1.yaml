@@ -1,0 +1,65 @@
+# 测试: job 指定两种资源,但是对应 cq 只有一种资源,会发生什么
+
+# 1. ResourceFlavor - 只提供 CPU 资源
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: cpu-only-flavor
+
+---
+# 2. ClusterQueue - 只配置 CPU 资源
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: cpu-only-cq
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu"]
+    flavors:
+    - name: cpu-only-flavor
+      resources:
+      - name: "cpu"
+        nominalQuota: "4"
+---
+# 3. LocalQueue
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: test-queue
+  namespace: default
+spec:
+  clusterQueue: cpu-only-cq
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-job
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: test-queue
+spec:
+  parallelism: 1
+  completions: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: test-container
+        image: nginx:latest
+        resources:
+          requests:
+            cpu: "1"           # 需要 CPU 资源
+            nvidia.com/gpu: "1" # 需要 GPU 资源（ClusterQueue 中没有）
+          limits:
+            cpu: "1"
+            nvidia.com/gpu: "1"
+
+# 结论：job 无法准入
+# workload 状态如下：
+# status:
+#   conditions:
+#   - lastTransitionTime: "2025-09-19T17:36:19Z"
+#     message: 'couldn''t assign flavors to pod set main: resource nvidia.com/gpu unavailable
+#       in ClusterQueue'

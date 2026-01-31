@@ -3,6 +3,7 @@ kind: ClusterQueue
 metadata:
   name: high-priority-cq
 spec:
+  namespaceSelector: {} # match all.
   cohort: preemption-cohort
   preemption:
     withinClusterQueue: LowerPriority
@@ -29,6 +30,7 @@ kind: ClusterQueue
 metadata:
   name: medium-priority-cq
 spec:
+  namespaceSelector: {} # match all.
   cohort: preemption-cohort
   preemption:
     withinClusterQueue: LowerPriority
@@ -55,6 +57,7 @@ kind: ClusterQueue
 metadata:
   name: low-priority-cq
 spec:
+  namespaceSelector: {} # match all.
   cohort: preemption-cohort
   preemption:
     withinClusterQueue: LowerPriority
