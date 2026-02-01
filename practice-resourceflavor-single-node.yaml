@@ -1,0 +1,99 @@
+# =============================================================================
+# ResourceFlavor 实践：单节点本地集群
+# 目的：观察 Kueue 准入后，Pod 自动获得 ResourceFlavor 的 nodeSelector
+# =============================================================================
+#
+# 使用前请先给当前唯一节点打上标签（否则没有节点“匹配”该 flavor，调度会失败）：
+#
+#   # 查看节点名
+#   kubectl get nodes
+#
+#   # 给节点打标签（把 <NODE_NAME> 换成你的节点名，或直接用 --all 表示所有节点）
+#   kubectl label node <NODE_NAME> kueue-demo/node=local --overwrite
+#
+#   若只有一个节点，也可：
+#   kubectl label nodes --all kueue-demo/node=local --overwrite
+#
+# 然后按顺序应用本文件：
+#   kubectl apply -f practice-resourceflavor-single-node.yaml
+#
+# 观察 Pod 的 nodeSelector（准入后才会出现）：
+#   kubectl get job -n default rf-demo-job -o yaml
+#   kubectl get pod -n default -l job-name=rf-demo-job -o yaml
+# =============================================================================
+
+---
+# 1. ResourceFlavor：用 nodeLabels 描述“匹配哪些节点”
+#    准入后，这些 label 会被合并进 Pod 的 nodeSelector，从而把 Pod 调度到带这些标签的节点上
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: local-node
+spec:
+  nodeLabels:
+    kueue-demo/node: local
+  # 若你的节点有污点，可在这里写 tolerations，Kueue 会一并注入到 Pod
+  # tolerations:
+  # - key: "example.com/dedicated"
+  #   operator: Equal
+  #   value: "true"
+  #   effect: NoSchedule
+
+---
+# 2. ClusterQueue：使用上面的 flavor，并给 cpu/memory 配额
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: rf-demo-cq
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: local-node
+          resources:
+            - name: cpu
+              nominalQuota: 4
+            - name: memory
+              nominalQuota: 4Gi
+
+---
+# 3. LocalQueue：绑定到 ClusterQueue
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: rf-demo-queue
+  namespace: default
+spec:
+  clusterQueue: rf-demo-cq
+
+---
+# 4. 测试 Job：挂到队列上，请求资源；准入后 Pod 会自动带上 ResourceFlavor 的 nodeSelector
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rf-demo-job
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: rf-demo-queue
+spec:
+  suspend: true   # 由 Kueue 准入后再启动
+  parallelism: 1
+  completions: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: demo
+          image: busybox:1.36
+          command: ["sh", "-c", "echo hello from ResourceFlavor demo && sleep 5"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      # 这里不写 nodeSelector；准入后 Kueue 会根据分配的 flavor 自动注入：
+      #   nodeSelector:
+      #     kueue-demo/node: local
